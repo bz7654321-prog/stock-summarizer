@@ -5,7 +5,12 @@ from youtube_transcript_api import YouTubeTranscriptApi
 import google.generativeai as genai
 
 # --- [설정 부분] 요약하고 싶은 채널 ID ---
-CHANNELS = ["@DSnews77 @디에스경제급등 @디에스경제연구소DS @디에스황제주식TV @디에스경제타임즈 @Power_bus2"] 
+CHANNELS = ["@DSnews77", 
+    "@디에스경제급등", 
+    "@디에스경제연구소DS", 
+    "@디에스황제주식TV", 
+    "@디에스경제타임즈", 
+    "@Power_bus2"] 
 # ----------------------------------------
 
 def get_video_list(api_key, channel_handle):
