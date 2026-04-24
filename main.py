@@ -35,17 +35,17 @@ def get_video_list(api_key, channel_handle):
 def main():
     # Secrets에서 정보 가져오기
     api_key = os.environ.get("YOUTUBE_API_KEY")
-    gemini_key = os.environ.get("GEMINI_API_KEY")
+    _key = os.environ.get("_API_KEY")
     bot_token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
     # 2. 가장 안정적인 AI 모델 명칭으로 설정
     try:
-        genai.configure(api_key=gemini_key)
-        # 404 에러 방지를 위해 가장 범용적인 'gemini-1.5-flash' 사용
-        model = genai.GenerativeModel('gemini-pro')
+        genai.configure(api_key=_key)
+        # 404 에러 방지를 위해 가장 범용적인 '-1.5-flash' 사용
+        model = genai.GenerativeModel('gemini-1.5-flash')
     except:
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-1.5-flash')
 
     for handle in CHANNELS:
         videos = get_video_list(api_key, handle)
