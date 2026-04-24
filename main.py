@@ -18,11 +18,11 @@ def get_video_list(api_key, channel_handle):
     
     # 실행 시간에 맞춰 '몇 시간 전' 영상을 가져올지 동적으로 계산하여 중복 방지
     if now.hour == 10:   # 19시 실행 (07시~19시 사이의 12시간 분량)
-        delta = 12
+        delta = 24
     elif now.hour == 13: # 22시 실행 (19시~22시 사이의 3시간 분량)
-        delta = 3
+        delta = 24
     elif now.hour == 22: # 07시 실행 (22시~07시 사이의 9시간 분량)
-        delta = 9
+        delta = 24
     else:
         delta = 24       # 수동 실행 시 기본값 (24시간)
 
