@@ -3,9 +3,8 @@ import requests
 from datetime import datetime, timedelta
 from youtube_transcript_api import YouTubeTranscriptApi
 import google.generativeai as genai
-from urllib.parse import quote # 한글 주소 변환용
+from urllib.parse import quote
 
-# --- [설정 부분] 한글 핸들도 그대로 넣으시면 됩니다 ---
 CHANNELS = [
     "@디에스경제급등",
     "@디에스경제연구소DS",
@@ -14,29 +13,20 @@ CHANNELS = [
     "@Power_bus2",
     "@DSnews77"
 ]
-# -------------------------------------------------------
 
 def get_video_list(api_key, channel_handle):
     now = datetime.utcnow()
-    delta = 24 # 최근 24시간 내 영상 조회
-
+    delta = 24
     published_after = (now - timedelta(hours=delta)).isoformat() + "Z"
-    
-    # 한글 핸들을 컴퓨터가 이해할 수 있게 변환 (예: @디에스 -> %40%EB%94%94...)
     encoded_handle = quote(channel_handle)
     
+    # snippet 정보를 가져와서 자막이 없더라도 '설명'을 활용할 수 있게 함
     url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={encoded_handle}&type=video&order=date&maxResults=3&publishedAfter={published_after}&key={api_key}"
     
     try:
         r = requests.get(url).json()
-        if 'items' in r and len(r['items']) > 0:
-            print(f"✅ [{channel_handle}] 영상 {len(r['items'])}개 발견!")
-            return r['items']
-        else:
-            print(f"⚠️ [{channel_handle}] 최근 영상이 없거나 검색되지 않음")
-            return []
-    except Exception as e:
-        print(f"❌ 에러 발생: {e}")
+        return r.get('items', [])
+    except:
         return []
 
 def main():
@@ -53,25 +43,29 @@ def main():
         for v in videos:
             v_id = v['id']['videoId']
             title = v['snippet']['title']
+            description = v['snippet']['description'] # 자막 대용으로 사용
             
+            content = ""
             try:
-                # 자막 추출 (한국어 최우선)
+                # 1 순위: 자막 추출 시도
                 srt = YouTubeTranscriptApi.get_transcript(v_id, languages=['ko'])
-                text = " ".join([i['text'] for i in srt])
-                
-                prompt = f"""다음 주식 영상의 핵심 내용을 투자자 관점에서 요약해줘.
-                제목: {title}
-                내용: {text}
-                [원칙] 종목번호 정확도 엄수, 중복 정보 통합."""
-                
-                response = model.generate_content(prompt)
-                
-                msg = f"📺 {title}\n\n{response.text}"
-                send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                requests.post(send_url, data={'chat_id': chat_id, 'text': msg})
-                print(f"🚀 [{title}] 전송 완료!")
+                content = " ".join([i['text'] for i in srt])
+                print(f"✅ [{title}] 자막 추출 성공")
             except:
-                print(f"⏭️ 자막 없음 건너뜀: {title}")
+                # 2 순위: 자막 없으면 영상 설명으로 대체
+                content = description
+                print(f"⚠️ [{title}] 자막 없음 -> 설명글로 요약 시도")
+            
+            if content:
+                prompt = f"제목: {title}\n내용: {content}\n위 주식 영상의 핵심을 투자자 관점에서 요약해줘. 종목번호 정확도 필수."
+                try:
+                    response = model.generate_content(prompt)
+                    msg = f"📺 {title}\n\n{response.text}"
+                    send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                    requests.post(send_url, data={'chat_id': chat_id, 'text': msg})
+                    print(f"🚀 전송 완료: {title}")
+                except Exception as e:
+                    print(f"❌ AI 요약 에러: {e}")
 
 if __name__ == "__main__":
     main()
