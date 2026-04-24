@@ -43,7 +43,7 @@ def main():
     try:
         genai.configure(api_key=gemini_key)
         # 404 에러 방지를 위해 가장 범용적인 'gemini-1.5-flash' 사용
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-pro')
     except:
         model = genai.GenerativeModel('gemini-pro')
 
