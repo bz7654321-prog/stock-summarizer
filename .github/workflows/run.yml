@@ -3,8 +3,6 @@ name: 주식 유튜브 요약 실행
 on:
   workflow_dispatch:
 
-  # 자동 실행도 원하면 아래 schedule 사용
-  # 현재 설정: 매일 오전 8시 실행, 한국시간 기준
   schedule:
     - cron: "0 23 * * *"
 
@@ -26,13 +24,12 @@ jobs:
 
     steps:
       - name: 코드 가져오기
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: 파이썬 설치
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: 파이썬 버전 확인
         run: |
