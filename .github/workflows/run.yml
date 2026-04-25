@@ -4,14 +4,11 @@ on:
   workflow_dispatch:
 
   schedule:
-    # 한국시간 20:00 = UTC 11:00
-    - cron: "0 11 * * *"
+    # 한국시간 19:00 = UTC 10:00
+    - cron: "0 10 * * *"
 
     # 한국시간 22:00 = UTC 13:00
     - cron: "0 13 * * *"
-
-    # 한국시간 07:00 = UTC 22:00
-    - cron: "0 22 * * *"
 
 permissions:
   contents: write
@@ -34,7 +31,7 @@ jobs:
 
       LOOKBACK_HOURS: "24"
       MAX_VIDEOS_PER_CHANNEL: "10"
-      GEMINI_MODEL: "gemini-2.5-flash"
+      GEMINI_MODEL: "gemini-2.5-flash-lite"
 
     steps:
       - name: 코드 가져오기
