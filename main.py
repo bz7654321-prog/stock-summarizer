@@ -23,7 +23,7 @@ CHANNELS = [
 YOUTUBE_BASE_URL = "https://www.googleapis.com/youtube/v3"
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "48"))
 MAX_VIDEOS_PER_CHANNEL = int(os.environ.get("MAX_VIDEOS_PER_CHANNEL", "10"))
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash-lite"
 
 PROCESSED_FILE = "processed_videos.json"
 
