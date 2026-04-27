@@ -33,7 +33,7 @@ jobs:
       MAX_VIDEOS_PER_CHANNEL: "10"
 
       # 유튜브 링크 직접 분석용 기본 모델
-      GEMINI_MODEL: "gemini-2.0-flash-lite"
+      GEMINI_MODEL: "gemini-1.5-flash"
 
     steps:
       - name: 코드 가져오기
