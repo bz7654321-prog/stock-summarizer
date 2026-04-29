@@ -14,7 +14,13 @@ from google.genai import types
 
 CHANNELS = [
     "@디에스경제급등",
- ]
+    "@디에스경제연구소DS",
+    "@디에스황제주식TV",
+    "@디에스경제타임즈",
+    "@Power_bus2",
+    "@DSnews77",
+    "@문선생_경제교실",
+]
 
 TARGET_STOCKS_BY_CHANNEL = {
     "@디에스경제급등": [],
