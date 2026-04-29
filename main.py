@@ -21,7 +21,6 @@ CHANNELS = [
     "@Power_bus2",
     "@DSnews77",
     "@문선생_경제교실",
-   
 ]
 
 # 채널별 관심 종목 필터
@@ -641,7 +640,7 @@ def main():
         print(f"🔗 {url}")
 
         if video_id in processed_ids:
-            print("⏭️ 이미 처리한 영상이라 건너뜀")
+            print("⏭️ 이미 처리한 영상이라 건너뜁니다.")
             skipped_count += 1
             continue
 
@@ -728,6 +727,12 @@ def main():
         except Exception as e:
             print(f"❌ 요약 실패: {e}")
             failed_count += 1
+
+        # ==============================================================
+        # 💡 [바로 이 부분!] 구글 API 과부하를 막기 위해 10초를 대기합니다.
+        # ==============================================================
+        print("⏳ 구글 API 과부하 방지를 위해 10초 대기 중...")
+        time.sleep(10)
 
     print("\n" + "=" * 80)
     print("✅ 실행 완료")
