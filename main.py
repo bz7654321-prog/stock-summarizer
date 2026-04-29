@@ -13,11 +13,12 @@ from google.genai import types
 # =========================
 
 CHANNELS = [
-    "@디에스경제급등",
+    "@디에스경제연구소DS",
+    
 ]
 
 TARGET_STOCKS_BY_CHANNEL = {
-    "@디에스경제급등": [],
+    "@디에스경제연구소DS": [],
   
 }
 
@@ -26,7 +27,8 @@ YOUTUBE_BASE_URL = "https://www.googleapis.com/youtube/v3"
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "24"))
 MAX_VIDEOS_PER_CHANNEL = int(os.environ.get("MAX_VIDEOS_PER_CHANNEL", "10"))
 
-# 💡 외부 환경변수(yml) 다 무시하고 무조건 Pro 모델로 강제 고정!!!
+# 💡 외부 환경변수 무시하고 무조건 설정된 모델로 강제 고정!
+# (Pro의 깊은 분석을 원하시면 "gemini-1.5-pro", 빠른 속도를 원하시면 "gemini-2.5-flash"로 수정하세요)
 GEMINI_MODEL = "gemini-2.5-flash"
 
 PROCESSED_FILE = "processed_videos.json"
@@ -149,7 +151,7 @@ def make_video_prompt(video, matched_keywords):
 """.strip()
 
 # =========================
-# 5. 하이브리드 요약 로직 (Pro 전용)
+# 5. 하이브리드 요약 로직
 # =========================
 
 def summarize_video_pro(client, video, matched_keywords):
@@ -167,8 +169,8 @@ def summarize_video_pro(client, video, matched_keywords):
         print("⚠️ 자막 없음 -> 유튜브 링크 직접 분석 모드 전환")
         transcript_text = None
 
-    # 2. Pro 모델은 1분에 2회(30초당 1회) 제한이 있으므로 무조건 30초 대기
-    print(f"⏳ 구글 Pro 모델 할당량 보호를 위해 30초 대기 중...")
+    # 2. 구글 API 할당량 보호를 위해 영상당 30초 대기 (매우 중요!)
+    print(f"⏳ 구글 API 서버 할당량 보호를 위해 30초 대기 중...")
     time.sleep(30)
 
     try:
@@ -178,7 +180,7 @@ def summarize_video_pro(client, video, matched_keywords):
                 contents=prompt + f"\n\n[영상 스크립트 내용]\n{transcript_text[:20000]}",
                 config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=3500)
             )
-            return getattr(response, "text", "요약 실패"), "Gemini Pro (자막분석)"
+            return getattr(response, "text", "요약 실패"), f"{GEMINI_MODEL} (자막분석)"
         else:
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
@@ -188,32 +190,55 @@ def summarize_video_pro(client, video, matched_keywords):
                 ],
                 config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=3500)
             )
-            return getattr(response, "text", "요약 실패"), "Gemini Pro (영상직접분석)"
+            return getattr(response, "text", "요약 실패"), f"{GEMINI_MODEL} (영상직접분석)"
             
     except Exception as e:
         error_text = str(e).lower()
         if "429" in error_text or "quota" in error_text:
             raise QuotaExceededError(str(e))
-        raise RuntimeError(f"Pro 모델 요약 에러: {e}")
+        raise RuntimeError(f"모델 요약 에러: {e}")
 
 # =========================
-# 6. 텔레그램 전송
+# 6. 텔레그램 전송 (긴 글 쪼개기 적용)
 # =========================
+
+def split_message(text, max_len=3500):
+    chunks = []
+    while len(text) > max_len:
+        # 문맥이 끊기지 않도록 최대한 줄바꿈에서 자르기
+        split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        chunks.append(text[:split_at].strip())
+        text = text[split_at:].strip()
+    if text:
+        chunks.append(text)
+    return chunks
 
 def send_telegram(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": chat_id, "text": text[:4000], "disable_web_page_preview": True}, timeout=20)
-        return True
-    except:
-        return False
+    chunks = split_message(text)
+    
+    for i, chunk in enumerate(chunks, start=1):
+        # 내용이 길어서 쪼개진 경우 메시지 맨 위에 [1/2] 번호 달아주기
+        if len(chunks) > 1:
+            chunk = f"[{i}/{len(chunks)}]\n\n{chunk}"
+            
+        try:
+            requests.post(url, data={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}, timeout=20)
+            time.sleep(1) # 연속 전송 시 텔레그램 서버가 화내지 않게 1초 쉬기
+        except Exception as e:
+            print(f"❌ 텔레그램 전송 에러: {e}")
+            return False
+            
+    return True
 
 # =========================
 # 7. 메인 실행
 # =========================
 
 def main():
-    print("🚀 주식 영상 요약 시작 (Gemini PRO 모델 + 30초 딜레이 적용)")
+    print(f"🚀 주식 영상 요약 시작 ({GEMINI_MODEL} + 30초 딜레이 적용)")
     
     youtube_api_key = get_env("YOUTUBE_API_KEY")
     gemini_key = get_env("GEMINI_API_KEY", "_API_KEY", "GOOGLE_API_KEY")
