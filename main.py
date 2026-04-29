@@ -27,7 +27,7 @@ LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "24"))
 MAX_VIDEOS_PER_CHANNEL = int(os.environ.get("MAX_VIDEOS_PER_CHANNEL", "10"))
 
 # 💡 외부 환경변수(yml) 다 무시하고 무조건 Pro 모델로 강제 고정!!!
-GEMINI_MODEL = "gemini-1.5-pro"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 PROCESSED_FILE = "processed_videos.json"
 TELEGRAM_CHUNK_SIZE = 3500
