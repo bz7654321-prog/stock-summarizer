@@ -4,60 +4,76 @@ import time
 import requests
 from datetime import datetime, timedelta, timezone
 
-from youtube_transcript_api import YouTubeTranscriptApi
 from google import genai
 from google.genai import types
+from youtube_transcript_api import YouTubeTranscriptApi
+
 
 # =========================
 # 1. 기본 설정
 # =========================
 
 CHANNELS = [
-    "@디에스경제연구소DS",
-    
+    "@디에스황제주식TV",
+   
 ]
 
+# 채널별 관심 종목 필터
+# 빈 리스트 [] = 해당 채널의 모든 영상 요약
+# 종목명이 들어가 있으면 해당 종목이 제목/설명/자막에 있을 때만 요약
 TARGET_STOCKS_BY_CHANNEL = {
-    "@디에스경제연구소DS": [],
-  
+    "@디에스황제주식TV": [],
+ 
 }
 
 YOUTUBE_BASE_URL = "https://www.googleapis.com/youtube/v3"
 
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "24"))
 MAX_VIDEOS_PER_CHANNEL = int(os.environ.get("MAX_VIDEOS_PER_CHANNEL", "10"))
-
-# 💡 외부 환경변수 무시하고 무조건 설정된 모델로 강제 고정!
-# (Pro의 깊은 분석을 원하시면 "gemini-1.5-pro", 빠른 속도를 원하시면 "gemini-2.5-flash"로 수정하세요)
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 PROCESSED_FILE = "processed_videos.json"
 TELEGRAM_CHUNK_SIZE = 3500
 
-# =========================
-# 2. 예외 및 환경변수
-# =========================
 
-class QuotaExceededError(Exception):
-    pass
+# =========================
+# 2. 환경변수
+# =========================
 
 def get_env(*names):
     for name in names:
         value = os.environ.get(name)
-        if value: return value
+        if value:
+            return value
+
     raise RuntimeError(f"Secrets에 다음 값 중 하나가 필요합니다: {', '.join(names)}")
 
+
 # =========================
-# 3. 데이터 처리 및 API 통신
+# 3. 처리 기록
 # =========================
 
 def load_processed_ids():
-    if not os.path.exists(PROCESSED_FILE): return set()
+    if os.environ.get("RESET_PROCESSED") == "1":
+        print("⚠️ RESET_PROCESSED=1: 기존 처리 기록 무시")
+        return set()
+
+    if not os.path.exists(PROCESSED_FILE):
+        return set()
+
     try:
         with open(PROCESSED_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return set(data) if isinstance(data, list) else set()
-    except: return set()
+
+        if isinstance(data, list):
+            return set(data)
+
+        return set()
+
+    except Exception as e:
+        print(f"⚠️ 처리 기록 파일 읽기 실패: {e}")
+        return set()
+
 
 def save_processed_ids(processed_ids):
     try:
@@ -66,233 +82,707 @@ def save_processed_ids(processed_ids):
     except Exception as e:
         print(f"⚠️ 처리 기록 저장 실패: {e}")
 
+
+# =========================
+# 4. YouTube API
+# =========================
+
 def youtube_get(endpoint, params, api_key):
     params = dict(params)
     params["key"] = api_key
+
     url = f"{YOUTUBE_BASE_URL}/{endpoint}"
-    response = requests.get(url, params=params, timeout=20).json()
-    if "error" in response: raise RuntimeError(f"YouTube API 오류: {response.get('error')}")
-    return response
+
+    try:
+        response = requests.get(url, params=params, timeout=20)
+    except Exception as e:
+        raise RuntimeError(f"YouTube API 요청 실패: {e}")
+
+    try:
+        data = response.json()
+    except Exception:
+        raise RuntimeError(f"YouTube 응답 JSON 변환 실패: {response.text[:500]}")
+
+    if response.status_code != 200 or "error" in data:
+        raise RuntimeError(f"YouTube API 오류: {data.get('error', data)}")
+
+    return data
+
 
 def get_channel_info(api_key, channel_handle):
-    h = channel_handle.replace("@", "").strip()
+    handle = channel_handle.strip()
+
+    attempts = []
+
+    if handle.startswith("@"):
+        attempts.append(handle)
+        attempts.append(handle[1:])
+    else:
+        attempts.append(handle)
+
+    for h in attempts:
+        try:
+            data = youtube_get(
+                "channels",
+                {
+                    "part": "snippet,contentDetails",
+                    "forHandle": h,
+                },
+                api_key,
+            )
+
+            items = data.get("items", [])
+
+            if items:
+                return items[0]
+
+        except Exception as e:
+            print(f"⚠️ 채널 핸들 조회 실패: {channel_handle} / {e}")
+
     try:
-        data = youtube_get("channels", {"part": "snippet,contentDetails", "forHandle": h}, api_key)
-        if data.get("items"): return data["items"][0]
+        data = youtube_get(
+            "search",
+            {
+                "part": "snippet",
+                "q": channel_handle,
+                "type": "channel",
+                "maxResults": 1,
+            },
+            api_key,
+        )
+
+        items = data.get("items", [])
+
+        if not items:
+            return None
+
+        channel_id = items[0]["snippet"]["channelId"]
+
+        data = youtube_get(
+            "channels",
+            {
+                "part": "snippet,contentDetails",
+                "id": channel_id,
+            },
+            api_key,
+        )
+
+        items = data.get("items", [])
+
+        if items:
+            print(f"⚠️ [{channel_handle}] 정확 핸들 조회 실패 → 검색 결과 채널 사용")
+            return items[0]
+
     except Exception as e:
-        print(f"⚠️ 채널 핸들 조회 실패: {channel_handle} / {e}")
+        print(f"⚠️ 채널 검색 실패: {channel_handle} / {e}")
+
     return None
+
+
+def parse_youtube_time(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
 
 def get_recent_videos(api_key, channel_handle):
     channel = get_channel_info(api_key, channel_handle)
-    if not channel: return []
-    channel_title = channel["snippet"]["title"]
-    uploads_playlist_id = channel["contentDetails"]["relatedPlaylists"]["uploads"]
+
+    if not channel:
+        print(f"❌ 채널을 찾지 못함: {channel_handle}")
+        return []
+
+    channel_title = channel.get("snippet", {}).get("title", channel_handle)
+
+    uploads_playlist_id = (
+        channel
+        .get("contentDetails", {})
+        .get("relatedPlaylists", {})
+        .get("uploads")
+    )
+
+    if not uploads_playlist_id:
+        print(f"❌ 업로드 재생목록 없음: {channel_title}")
+        return []
+
     print(f"\n📡 채널 확인: {channel_title}")
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
+
     videos = []
-    data = youtube_get("playlistItems", {"part": "snippet,contentDetails", "playlistId": uploads_playlist_id, "maxResults": MAX_VIDEOS_PER_CHANNEL}, api_key)
+    next_page_token = None
 
-    for item in data.get("items", []):
-        snippet = item.get("snippet", {})
-        content_details = item.get("contentDetails", {})
-        video_id = content_details.get("videoId")
-        published_at = content_details.get("videoPublishedAt") or snippet.get("publishedAt")
-        
-        if not video_id or not published_at: continue
-        pub_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-        if pub_dt < cutoff: continue
+    while len(videos) < MAX_VIDEOS_PER_CHANNEL:
+        params = {
+            "part": "snippet,contentDetails",
+            "playlistId": uploads_playlist_id,
+            "maxResults": min(50, MAX_VIDEOS_PER_CHANNEL - len(videos)),
+        }
 
-        videos.append({
-            "channel_handle": channel_handle,
-            "channel_title": channel_title,
-            "video_id": video_id,
-            "title": snippet.get("title", ""),
-            "description": snippet.get("description", ""),
-            "published_at": published_at,
-            "url": f"https://www.youtube.com/watch?v={video_id}",
-        })
+        if next_page_token:
+            params["pageToken"] = next_page_token
+
+        data = youtube_get("playlistItems", params, api_key)
+
+        old_video_found = False
+
+        for item in data.get("items", []):
+            snippet = item.get("snippet", {})
+            content_details = item.get("contentDetails", {})
+
+            video_id = content_details.get("videoId")
+            title = snippet.get("title", "")
+            description = snippet.get("description", "")
+            published_at = content_details.get("videoPublishedAt") or snippet.get("publishedAt")
+
+            if not video_id or not published_at:
+                continue
+
+            if title in ["Private video", "Deleted video"]:
+                continue
+
+            published_dt = parse_youtube_time(published_at)
+
+            if published_dt < cutoff:
+                old_video_found = True
+                continue
+
+            videos.append({
+                "channel_handle": channel_handle,
+                "channel_title": channel_title,
+                "video_id": video_id,
+                "title": title,
+                "description": description,
+                "published_at": published_at,
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+            })
+
+        next_page_token = data.get("nextPageToken")
+
+        if old_video_found or not next_page_token:
+            break
+
+    print(f"🔍 최근 {LOOKBACK_HOURS}시간 영상 {len(videos)}개 발견")
+
     return videos
 
+
 # =========================
-# 4. 종목 필터 및 프롬프트
+# 5. 자막
 # =========================
 
-def clean_text(text): return text.replace("\n", " ").replace("\r", " ").replace("\t", " ").strip() if text else ""
-def normalize_text(text): return clean_text(text).lower().replace(" ", "")
-def get_target_keywords(channel_handle): return TARGET_STOCKS_BY_CHANNEL.get(channel_handle, [])
-def channel_has_filter(channel_handle): return len(get_target_keywords(channel_handle)) > 0
+def clean_text(text):
+    if not text:
+        return ""
 
-def quick_match_by_title_description(channel_handle, title, description):
+    return (
+        text.replace("\n", " ")
+        .replace("\r", " ")
+        .replace("\t", " ")
+        .strip()
+    )
+
+
+def transcript_to_text(items):
+    parts = []
+
+    for item in items:
+        if isinstance(item, dict):
+            text = item.get("text", "")
+        else:
+            text = getattr(item, "text", "")
+
+        text = clean_text(text)
+
+        if text:
+            parts.append(text)
+
+    return " ".join(parts).strip()
+
+
+def get_video_transcript(video_id):
+    language_attempts = [
+        ["ko"],
+        ["ko-KR"],
+        ["ko", "ko-KR"],
+        ["en"],
+        ["en-US"],
+        ["ko", "ko-KR", "en", "en-US"],
+    ]
+
+    for languages in language_attempts:
+        try:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+            text = transcript_to_text(transcript)
+
+            if text:
+                return text, "자막 기반"
+
+        except Exception:
+            pass
+
+    for languages in language_attempts:
+        try:
+            api = YouTubeTranscriptApi()
+            transcript = api.fetch(video_id, languages=languages)
+            text = transcript_to_text(transcript)
+
+            if text:
+                return text, "자막 기반"
+
+        except Exception:
+            pass
+
+    try:
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        except Exception:
+            api = YouTubeTranscriptApi()
+            transcript_list = api.list(video_id)
+
+        for transcript in transcript_list:
+            try:
+                if getattr(transcript, "is_translatable", False):
+                    translated = transcript.translate("ko")
+                    items = translated.fetch()
+                    text = transcript_to_text(items)
+
+                    if text:
+                        return text, "번역 자막 기반"
+
+            except Exception:
+                continue
+
+    except Exception:
+        pass
+
+    return "", "자막 없음"
+
+
+# =========================
+# 6. 종목 필터
+# =========================
+
+def normalize_text(text):
+    return clean_text(text).lower().replace(" ", "")
+
+
+def get_target_keywords(channel_handle):
+    return TARGET_STOCKS_BY_CHANNEL.get(channel_handle, [])
+
+
+def find_matched_keywords(channel_handle, title, description, transcript_text=""):
     keywords = get_target_keywords(channel_handle)
-    if not keywords: return []
-    combined = normalize_text(f"{title} {description}")
-    return [kw for kw in keywords if normalize_text(kw) in combined]
 
-def make_video_prompt(video, matched_keywords):
-    target_keywords = get_target_keywords(video["channel_handle"])
-    filter_instruction = f"[관심 종목 필터]\n이 채널은 아래 관심 종목이 영상에서 실제로 다뤄질 때만 요약한다.\n관심 종목: {', '.join(target_keywords)}\n영상 전체를 확인한 뒤, 관심 종목이 실질적으로 다뤄지지 않았다면 다른 설명 없이 정확히 아래 문장만 출력해라.\nSKIP_VIDEO_NO_TARGET_STOCK" if target_keywords else "[관심 종목 필터]\n이 채널은 전체 영상 요약 대상이다.\n영상에서 핵심 추천 종목 또는 분석 종목만 중심으로 요약해라."
+    if not keywords:
+        return []
+
+    combined = normalize_text(f"{title} {description} {transcript_text}")
+
+    matched = []
+
+    for keyword in keywords:
+        key = normalize_text(keyword)
+
+        if key and key in combined:
+            matched.append(keyword)
+
+    return matched
+
+
+def channel_has_filter(channel_handle):
+    return len(get_target_keywords(channel_handle)) > 0
+
+
+# =========================
+# 7. Gemini 요약
+# =========================
+
+def make_summary_prompt(video, content, source_type, matched_keywords):
+    title = video["title"]
+    channel_title = video["channel_title"]
+    url = video["url"]
+    published_at = video["published_at"]
+
+    content = content[:25000]
+
+    target_info = ", ".join(matched_keywords) if matched_keywords else "전체 영상 요약"
 
     return f"""
 너는 주식 유튜브 영상을 투자자 관점에서 요약하는 AI다.
-{filter_instruction}
 
-[요약 원칙]
-1. 설명글이나 제목만 보고 요약하지 말고, 영상에서 실제로 말한 내용을 기준으로 정리해라.
-2. 종목명, 종목코드, 매수가, 목표가, 손절가, 지지선, 저항선이 나오면 반드시 적어라.
-3. 가격이 영상에서 나오지 않았다면 "영상 내 언급 없음"이라고 적어라.
-4. 종목코드를 확신하지 못하면 "종목코드 확인 필요"라고 적어라.
-5. 단순 언급 종목을 길게 나열하지 마라.
-6. 추천 또는 집중 분석한 핵심 종목만 자세히 정리해라.
-7. 영상에서 나온 시간대를 가능하면 [MM:SS] 형식으로 붙여라.
-8. 과장성 표현은 그대로 믿지 말고 리스크에 따로 적어라.
-9. 결과는 깔끔한 투자 브리핑 형식으로 작성해라.
+아래 영상 내용을 바탕으로 반드시 '영상별 요약문'을 작성해라.
+특히 추천종목, 추천 이유, 매수가, 목표가, 매도 목표가, 손절가, 보유 전략이 나오면 절대 빠뜨리지 말고 정리해라.
+
+[이번 요약의 관심 종목]
+{target_info}
+
+[매우 중요한 원칙]
+1. 영상에서 실제로 나온 내용과 네 추론을 반드시 구분해라.
+2. 종목명과 종목코드를 함부로 지어내지 마라.
+3. 종목코드를 확신하지 못하면 "종목코드 확인 필요"라고 적어라.
+4. 매수가, 목표가, 손절가, 매도 목표가는 영상에서 직접 언급된 경우에만 적어라.
+5. 가격이 영상에 없으면 절대 계산해서 만들지 말고 "영상 내 언급 없음"이라고 적어라.
+6. 추천종목이 명확히 나오면 반드시 따로 정리해라.
+7. 추천 이유가 나오면 1~2문장으로 간단명료하게 정리해라.
+8. 추천종목과 단순 언급 종목을 구분해라.
+9. "급등", "상한가", "세력", "작전", "재료", "대장주" 같은 표현은 과장 가능성을 따로 표시해라.
+10. 매수 추천처럼 단정하지 말고, "영상에서 주장한 내용"으로 표현해라.
+11. 내용이 부족하면 "내용 부족"이라고 솔직히 써라.
+12. 영상 정보는 출력하지 마라. 제목, 채널, 링크는 이미 메시지 상단에 있으므로 반복하지 마라.
+13. 관심 종목이 지정된 채널의 경우, 관심 종목과 관련된 내용은 더 자세히 정리하고 다른 종목은 간단히만 정리해라.
+
+[출력 형식]
+
+🧾 핵심 요약
+- 이 영상이 말하는 핵심을 3~5줄로 정리
+
+🎯 관심 종목 매칭
+- 이 영상에서 감지된 관심 종목:
+- 관심 종목 관련 핵심 내용:
+
+⭐ 추천 종목 정리
+
+1) 종목명:
+- 종목코드:
+- 추천 여부:
+- 추천 이유 요약:
+- 관련 테마:
+- 영상에서 제시한 핵심 근거:
+- 매수가 / 진입가:
+- 1차 목표가:
+- 2차 목표가:
+- 최종 매도 목표가:
+- 손절가:
+- 보유 기간 / 매매 관점:
+- 단기 / 스윙 / 중기 구분:
+- 불확실한 부분:
+
+※ 추천 이유는 길게 쓰지 말고 1~2문장으로 정리해라.
+※ 영상에서 추천 이유가 불명확하면 "영상 내 명확한 설명 없음"이라고 써라.
+※ 영상에 가격이 나오지 않으면 반드시 "영상 내 언급 없음"이라고 써라.
+※ 종목이 여러 개 나오면 종목별로 반복해서 정리해라.
+※ 단순 언급 종목과 실제 추천 종목을 반드시 구분해라.
+
+📈 단순 언급 종목
+- 추천까지는 아니지만 영상에서 언급된 종목
+- 종목명 / 종목코드 / 언급 이유
+
+💰 매매 전략 요약
+- 영상에서 제시한 매수 전략:
+- 영상에서 제시한 매도 전략:
+- 분할매수 여부:
+- 분할매도 여부:
+- 추격매수 주의 여부:
+- 손절 기준:
+- 목표가 도달 시 대응:
+- 단기/스윙/중기 관점:
+
+🔥 상승 논리
+- 영상에서 제시한 상승 근거:
+- 재료:
+- 테마:
+- 수급:
+- 차트상 근거:
+- 실적 또는 뉴스 근거:
+
+⚠️ 리스크
+- 과장 가능성:
+- 확인이 필요한 주장:
+- 이미 많이 오른 종목인지 여부:
+- 거래량 급감 위험:
+- 테마 소멸 위험:
+- 투자자가 조심해야 할 부분:
+
+✅ 투자자 체크포인트
+- 공시:
+- 실적:
+- 거래량:
+- 차트:
+- 수급:
+- 테마 지속성:
+- 유튜버 주장과 실제 데이터가 맞는지 확인할 부분:
+
+[참고용 영상 정보 - 출력하지 말 것]
+채널: {channel_title}
+제목: {title}
+게시일: {published_at}
+요약 근거: {source_type}
+링크: {url}
+
+[영상 내용]
+{content}
 """.strip()
 
-# =========================
-# 5. 하이브리드 요약 로직
-# =========================
 
-def summarize_video_pro(client, video, matched_keywords):
-    prompt = make_video_prompt(video, matched_keywords)
-    video_id = video["video_id"]
-    video_url = video["url"]
-    
-    # 1. 자막 추출 시도
-    transcript_text = ""
-    try:
-        srt = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko'])
-        transcript_text = " ".join([i['text'] for i in srt])
-        print("✅ 자막 추출 성공 (데이터 경량화)")
-    except:
-        print("⚠️ 자막 없음 -> 유튜브 링크 직접 분석 모드 전환")
-        transcript_text = None
+def get_model_candidates():
+    candidates = [
+        GEMINI_MODEL,
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+    ]
 
-    # 2. 구글 API 할당량 보호를 위해 영상당 30초 대기 (매우 중요!)
-    print(f"⏳ 구글 API 서버 할당량 보호를 위해 30초 대기 중...")
-    time.sleep(30)
+    unique = []
 
-    try:
-        if transcript_text:
+    for model_name in candidates:
+        if model_name and model_name not in unique:
+            unique.append(model_name)
+
+    return unique
+
+
+def summarize_video(client, video, content, source_type, matched_keywords):
+    prompt = make_summary_prompt(video, content, source_type, matched_keywords)
+
+    last_error = None
+
+    for model_name in get_model_candidates():
+        try:
             response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt + f"\n\n[영상 스크립트 내용]\n{transcript_text[:20000]}",
-                config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=3500)
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=3000,
+                ),
             )
-            return getattr(response, "text", "요약 실패"), f"{GEMINI_MODEL} (자막분석)"
-        else:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[
-                    types.Part.from_uri(file_uri=video_url, mime_type="video/mp4"),
-                    types.Part.from_text(text=prompt)
-                ],
-                config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=3500)
-            )
-            return getattr(response, "text", "요약 실패"), f"{GEMINI_MODEL} (영상직접분석)"
-            
-    except Exception as e:
-        error_text = str(e).lower()
-        if "429" in error_text or "quota" in error_text:
-            raise QuotaExceededError(str(e))
-        raise RuntimeError(f"모델 요약 에러: {e}")
+
+            text = getattr(response, "text", "")
+
+            if text and text.strip():
+                return text.strip(), model_name
+
+            last_error = RuntimeError(f"{model_name} 모델 응답이 비어 있습니다.")
+
+        except Exception as e:
+            last_error = e
+            error_text = str(e).lower()
+
+            if (
+                "404" in error_text
+                or "not found" in error_text
+                or "not supported" in error_text
+                or "not_found" in error_text
+            ):
+                print(f"⚠️ Gemini 모델 사용 실패: {model_name} → 다음 모델 시도")
+                continue
+
+            raise
+
+    raise RuntimeError(f"모든 Gemini 모델 시도 실패: {last_error}")
+
 
 # =========================
-# 6. 텔레그램 전송 (긴 글 쪼개기 적용)
+# 8. 텔레그램
 # =========================
 
-def split_message(text, max_len=3500):
+def split_message(text, max_len=TELEGRAM_CHUNK_SIZE):
     chunks = []
+
     while len(text) > max_len:
-        # 문맥이 끊기지 않도록 최대한 줄바꿈에서 자르기
         split_at = text.rfind("\n", 0, max_len)
+
         if split_at == -1:
             split_at = max_len
+
         chunks.append(text[:split_at].strip())
         text = text[split_at:].strip()
+
     if text:
         chunks.append(text)
+
     return chunks
+
 
 def send_telegram(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+
     chunks = split_message(text)
-    
+
     for i, chunk in enumerate(chunks, start=1):
-        # 내용이 길어서 쪼개진 경우 메시지 맨 위에 [1/2] 번호 달아주기
         if len(chunks) > 1:
             chunk = f"[{i}/{len(chunks)}]\n\n{chunk}"
-            
+
         try:
-            requests.post(url, data={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}, timeout=20)
-            time.sleep(1) # 연속 전송 시 텔레그램 서버가 화내지 않게 1초 쉬기
+            response = requests.post(
+                url,
+                data={
+                    "chat_id": chat_id,
+                    "text": chunk,
+                    "disable_web_page_preview": True,
+                },
+                timeout=20,
+            )
         except Exception as e:
-            print(f"❌ 텔레그램 전송 에러: {e}")
+            print(f"❌ 텔레그램 요청 실패: {e}")
             return False
-            
+
+        try:
+            result = response.json()
+        except Exception:
+            print(f"❌ 텔레그램 응답 오류: {response.text[:500]}")
+            return False
+
+        if not result.get("ok"):
+            print(f"❌ 텔레그램 전송 실패: {result.get('description')}")
+            return False
+
+        time.sleep(0.5)
+
     return True
 
+
 # =========================
-# 7. 메인 실행
+# 9. 메인 실행
 # =========================
 
 def main():
-    print(f"🚀 주식 영상 요약 시작 ({GEMINI_MODEL} + 30초 딜레이 적용)")
-    
+    print("🚀 주식 유튜브 영상별 요약 시작")
+
     youtube_api_key = get_env("YOUTUBE_API_KEY")
-    gemini_key = get_env("GEMINI_API_KEY", "_API_KEY", "GOOGLE_API_KEY")
+    gemini_api_key = get_env("GEMINI_API_KEY", "_API_KEY", "GOOGLE_API_KEY")
     telegram_token = get_env("TELEGRAM_TOKEN")
     telegram_chat_id = get_env("TELEGRAM_CHAT_ID")
 
-    client = genai.Client(api_key=gemini_key)
+    client = genai.Client(api_key=gemini_api_key)
+
     processed_ids = load_processed_ids()
+
     all_videos = []
 
     for channel in CHANNELS:
         try:
-            all_videos.extend(get_recent_videos(youtube_api_key, channel))
+            videos = get_recent_videos(youtube_api_key, channel)
+            all_videos.extend(videos)
         except Exception as e:
-            print(f"❌ {channel} 검색 실패: {e}")
+            print(f"❌ 채널 처리 실패: {channel} / {e}")
 
     unique_videos = []
     seen = set()
-    for v in all_videos:
-        if v["video_id"] not in seen:
-            seen.add(v["video_id"])
-            unique_videos.append(v)
+
+    for video in all_videos:
+        video_id = video["video_id"]
+
+        if video_id in seen:
+            continue
+
+        seen.add(video_id)
+        unique_videos.append(video)
+
+    unique_videos.sort(key=lambda x: x.get("published_at", ""), reverse=True)
 
     print(f"\n📦 확인 대상 영상: {len(unique_videos)}개")
 
+    sent_count = 0
+    skipped_count = 0
+    failed_count = 0
+
     for video in unique_videos:
         video_id = video["video_id"]
+        title = video["title"]
+        url = video["url"]
+        channel_title = video["channel_title"]
+        channel_handle = video["channel_handle"]
+        description = clean_text(video.get("description", ""))
+
+        print("\n" + "=" * 80)
+        print(f"🎬 영상 처리 중: [{channel_title}] {title}")
+        print(f"🔗 {url}")
+
         if video_id in processed_ids:
+            print("⏭️ 이미 처리한 영상이라 건너뜀")
+            skipped_count += 1
             continue
 
-        print("\n" + "=" * 60)
-        print(f"🎬 처리 중: [{video['channel_title']}] {video['title']}")
-        matched_keywords = quick_match_by_title_description(video["channel_handle"], video["title"], video.get("description", ""))
+        transcript = ""
+        source_type = "자막 없음"
+
+        # 필터 채널은 먼저 제목/설명에서 관심 종목 확인
+        matched_keywords = find_matched_keywords(channel_handle, title, description)
+
+        # 제목/설명에서 관심 종목이 안 잡힌 경우, 자막까지 확인
+        if channel_has_filter(channel_handle) and not matched_keywords:
+            transcript, source_type = get_video_transcript(video_id)
+
+            if transcript:
+                print("✅ 자막 확보 완료 - 관심 종목 필터 확인용")
+                matched_keywords = find_matched_keywords(channel_handle, title, description, transcript)
+            else:
+                print("⚠️ 자막 없음 - 제목/설명 기준으로만 필터 판단")
+
+            if not matched_keywords:
+                print(f"⏭️ 관심 종목 없음 → 요약하지 않음: {get_target_keywords(channel_handle)}")
+                processed_ids.add(video_id)
+                save_processed_ids(processed_ids)
+                skipped_count += 1
+                continue
+
+        # 필터 없는 채널이거나 관심 종목이 잡힌 채널은 요약 진행
+        if not transcript:
+            transcript, source_type = get_video_transcript(video_id)
+
+        if transcript:
+            content = transcript
+            print("✅ 자막 기반 요약 진행")
+        else:
+            if len(description) >= 30:
+                content = description
+                source_type = "설명글 기반"
+                print("⚠️ 자막 없음 → 설명글 기반으로 요약")
+            else:
+                print("⚠️ 자막과 설명글 부족 → 요약 불가")
+                processed_ids.add(video_id)
+                save_processed_ids(processed_ids)
+                skipped_count += 1
+                continue
+
+        # 필터 있는 채널인데 자막을 뒤늦게 얻은 경우 다시 매칭 확인
+        if channel_has_filter(channel_handle):
+            matched_keywords = find_matched_keywords(channel_handle, title, description, content)
+
+            if not matched_keywords:
+                print(f"⏭️ 관심 종목 없음 → 요약하지 않음: {get_target_keywords(channel_handle)}")
+                processed_ids.add(video_id)
+                save_processed_ids(processed_ids)
+                skipped_count += 1
+                continue
 
         try:
-            summary, used_method = summarize_video_pro(client, video, matched_keywords)
+            summary, used_model = summarize_video(client, video, content, source_type, matched_keywords)
 
-            if "SKIP_VIDEO_NO_TARGET_STOCK" in summary:
-                print("⏭️ 관심 종목이 없어서 건너뜁니다.")
+            matched_text = ", ".join(matched_keywords) if matched_keywords else "전체 요약"
+
+            final_message = f"""
+📺 {title}
+📡 {channel_title}
+🔗 {url}
+🎯 매칭 종목: {matched_text}
+🧾 요약 근거: {source_type}
+🤖 사용 모델: {used_model}
+
+{summary}
+""".strip()
+
+            ok = send_telegram(telegram_token, telegram_chat_id, final_message)
+
+            if ok:
+                print("🚀 영상별 요약 전송 완료")
+                processed_ids.add(video_id)
+                save_processed_ids(processed_ids)
+                sent_count += 1
             else:
-                final_message = f"📺 {video['title']}\n🔗 {video['url']}\n🤖 {used_method}\n\n{summary}"
-                if send_telegram(telegram_token, telegram_chat_id, final_message):
-                    print("🚀 텔레그램 전송 완료!")
-                
-            processed_ids.add(video_id)
-            save_processed_ids(processed_ids)
-            
-        except QuotaExceededError:
-            print("🛑 구글 할당량 초과(429)! 오늘 몫을 다 썼거나 딜레이가 더 필요합니다. 중단합니다.")
-            break
+                print("❌ 텔레그램 전송 실패")
+                failed_count += 1
+
         except Exception as e:
             print(f"❌ 요약 실패: {e}")
+            failed_count += 1
 
-    print("\n✅ 모든 작업 완료")
+    print("\n" + "=" * 80)
+    print("✅ 실행 완료")
+    print(f"🚀 요약 전송: {sent_count}개")
+    print(f"⏭️ 건너뜀: {skipped_count}개")
+    print(f"❌ 실패: {failed_count}개")
+
 
 if __name__ == "__main__":
     main()
