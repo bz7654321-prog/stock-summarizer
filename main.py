@@ -14,13 +14,7 @@ from google.genai import types
 
 CHANNELS = [
     "@디에스경제급등",
-    "@디에스경제연구소DS",
-    "@디에스황제주식TV",
-    "@디에스경제타임즈",
-    "@Power_bus2",
-    "@DSnews77",
-    "@문선생_경제교실",
-]
+ ]
 
 TARGET_STOCKS_BY_CHANNEL = {
     "@디에스경제급등": [],
@@ -37,8 +31,8 @@ YOUTUBE_BASE_URL = "https://www.googleapis.com/youtube/v3"
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "24"))
 MAX_VIDEOS_PER_CHANNEL = int(os.environ.get("MAX_VIDEOS_PER_CHANNEL", "10"))
 
-# 프로 모델 고정! (1분에 2회 제한)
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-pro-latest")
+# 💡 외부 환경변수(yml) 다 무시하고 무조건 Pro 모델로 강제 고정!!!
+GEMINI_MODEL = "gemini-1.5-pro"
 
 PROCESSED_FILE = "processed_videos.json"
 TELEGRAM_CHUNK_SIZE = 3500
@@ -140,7 +134,6 @@ def quick_match_by_title_description(channel_handle, title, description):
     return [kw for kw in keywords if normalize_text(kw) in combined]
 
 def make_video_prompt(video, matched_keywords):
-    # 병주님이 작성하신 프롬프트 그대로 살렸습니다!
     target_keywords = get_target_keywords(video["channel_handle"])
     filter_instruction = f"[관심 종목 필터]\n이 채널은 아래 관심 종목이 영상에서 실제로 다뤄질 때만 요약한다.\n관심 종목: {', '.join(target_keywords)}\n영상 전체를 확인한 뒤, 관심 종목이 실질적으로 다뤄지지 않았다면 다른 설명 없이 정확히 아래 문장만 출력해라.\nSKIP_VIDEO_NO_TARGET_STOCK" if target_keywords else "[관심 종목 필터]\n이 채널은 전체 영상 요약 대상이다.\n영상에서 핵심 추천 종목 또는 분석 종목만 중심으로 요약해라."
 
@@ -158,9 +151,6 @@ def make_video_prompt(video, matched_keywords):
 7. 영상에서 나온 시간대를 가능하면 [MM:SS] 형식으로 붙여라.
 8. 과장성 표현은 그대로 믿지 말고 리스크에 따로 적어라.
 9. 결과는 깔끔한 투자 브리핑 형식으로 작성해라.
-
-[원하는 출력 형식]
-(병주님이 지정하신 1~4번 형식으로 작성할 것)
 """.strip()
 
 # =========================
