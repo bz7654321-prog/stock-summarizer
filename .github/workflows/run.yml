@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
 
   schedule:
-    # 한국시간 20:02 = UTC 11:02
-    - cron: "0 10 * * *"
+    # 한국시간 20:08 = UTC 11:02
+    - cron: "8 23 * * *"
 
     # 한국시간 22:00 = UTC 13:00
     - cron: "0 13 * * *"
@@ -33,7 +33,7 @@ jobs:
       MAX_VIDEOS_PER_CHANNEL: "10"
 
       # 유튜브 링크 직접 분석용 기본 모델
-      GEMINI_MODEL: "gemini-1.5-flash"
+      GEMINI_MODEL: "gemini-2.5-flash-lite"
 
     steps:
       - name: 코드 가져오기
