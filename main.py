@@ -38,7 +38,7 @@ TARGET_STOCKS_BY_CHANNEL = {
 
 YOUTUBE_BASE_URL = "https://www.googleapis.com/youtube/v3"
 
-LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "24"))
+LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "12"))
 MAX_VIDEOS_PER_CHANNEL = int(os.environ.get("MAX_VIDEOS_PER_CHANNEL", "10"))
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
