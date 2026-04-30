@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    # 한국시간 19:00 = UTC 10:00
+    # 한국시간 20:02 = UTC 11:02
     - cron: "0 10 * * *"
 
     # 한국시간 22:00 = UTC 13:00
